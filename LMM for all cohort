@@ -1,0 +1,210 @@
+library(lmerTest)
+library(lme4)
+library(ggplot2)
+library(dplyr)
+library(broom.mixed)
+library(performance)
+
+rm(list=ls())
+
+# Variable definitions
+name.file = c("12meses_glmer")
+meses = c("12months")
+referencias = c("Regression", "Maintained", "Progression")
+
+# Load dataset
+datos <- read.table("Progression_Datos_Work_12meses_Ingles.txt", header = TRUE, blank.lines.skip = TRUE, dec = ".", sep = "\t", quote = "", check.names = FALSE)
+
+# Remove non-relevant variables
+datos <- subset(datos, select = -c(Try_HDL, Sample, Time_between_T1_and_T5_BQ, Anual_Follow_up, mtDNA_CN_Mean, CV, mtDNA_CN_SD, S_AnthropoAge, Delta_Age))
+
+# Convert progression class to factor
+datos$Class_Progression <- factor(datos$Class_Progression, ordered = FALSE)
+
+# Identify numeric variables for modeling
+variables_numericas <- datos %>%
+  select_if(is.numeric) %>%
+  colnames()
+
+# MODEL FITTING
+resultados <- list()
+
+# Model formulas
+form_mod_adj1 <- "~ Time * Class_Progression + Age + Sex + (1 | ID)"
+form_mod_adj2 <- "~ Time * Class_Progression + Age + Sex + BMI + (1 | ID)"
+form_mod_simple <- "~ Time * Class_Progression + (1 | ID)"
+
+# Loop across reference levels
+for (ref in referencias) {
+  datos$Class_Progression <- relevel(datos$Class_Progression, ref = ref)
+  
+  # Loop across numeric variables
+  for (var in variables_numericas) {
+    
+    # Define model structures
+    modelos <- list(
+      Adj1 = as.formula(paste(var, form_mod_adj1)),
+      Adj2 = as.formula(paste(var, form_mod_adj2)),
+      Simple = as.formula(paste(var, form_mod_simple))
+    )
+    
+    # Fit each model
+    for (modelo_name in names(modelos)) {
+      formula <- modelos[[modelo_name]]
+      
+      modelo <- tryCatch({
+        lmer(formula, data = datos, na.action = na.exclude)
+      }, error = function(e) {
+        warning(paste("Error in variable", var, "with reference", ref, "and model", modelo_name, ":", e$message))
+        return(NULL)
+      })
+      
+      # Extract model results if successful
+      if (!is.null(modelo)) {
+        singularidad <- if (isSingular(modelo)) "Singular" else "No Singular"
+        resumen_modelo <- tidy(modelo)
+        aic_value <- AIC(modelo)
+        
+        # Annotate results
+        resumen_modelo$Variable <- var
+        resumen_modelo$Referencia <- ref
+        resumen_modelo$Modelo <- modelo_name
+        resumen_modelo$AIC <- aic_value
+        resumen_modelo$Singularidad <- singularidad
+        
+        resultados[[paste(var, ref, modelo_name, sep = "_")]] <- resumen_modelo
+      }
+    }
+  }
+}
+
+# Combine all results
+tabla_resultados <- bind_rows(resultados) %>%
+  select(-effect, -group) %>%
+  select(Variable, Referencia, Modelo, everything())
+
+# Recode model terms for clarity
+tabla_resultados$term <- recode(tabla_resultados$term,
+                                "Class_ProgressionMaintained" = "Maintained",
+                                "Class_ProgressionProgression" = "Progression",
+                                "Class_ProgressionRegression" = "Regression",
+                                "Time:Class_ProgressionProgression" = "Time:Progression",
+                                "Time:Class_ProgressionMaintained" = "Time:Maintained",
+                                "Time:Class_ProgressionRegression" = "Time:Regression")
+
+# Filter out random effects and redundant comparisons
+tabla_resultados <- tabla_resultados %>%
+  filter(!grepl("^sd_", term)) %>%
+  filter(!(Variable %in% c("ID", "Time"))) %>%
+  filter(
+    !(Referencia == "Progression" & term %in% c("Regression", "Time:Regression")) &
+      !(Referencia == "Regression" & term %in% c("Maintained", "Time:Maintained")) &
+      !(Referencia == "Progression" & term %in% c("Maintained", "Time:Maintained"))
+  ) %>%
+  mutate(Sample = meses[1])
+
+# Export model results
+write.csv(tabla_resultados, file = paste(name.file, "_resultados_global_All.csv", sep = ""), row.names = FALSE)
+
+# MODEL PERFORMANCE (R2)
+resultados_r2 <- list()
+
+for (ref in referencias) {
+  datos$Class_Progression <- relevel(datos$Class_Progression, ref = ref)
+  
+  for (var in variables_numericas) {
+    
+    modelos <- list(
+      Adj1 = as.formula(paste(var, form_mod_adj1)),
+      Adj2 = as.formula(paste(var, form_mod_adj2)),
+      Simple = as.formula(paste(var, form_mod_simple))
+    )
+    
+    for (modelo_name in names(modelos)) {
+      formula <- modelos[[modelo_name]]
+      
+      modelo <- tryCatch({
+        lmer(formula, data = datos, na.action = na.exclude)
+      }, error = function(e) {
+        warning(paste("R2 error in variable", var, "with reference", ref, "model", modelo_name, ":", e$message))
+        return(NULL)
+      })
+      
+      # Compute marginal and conditional R2
+      if (!is.null(modelo)) {
+        r2_values <- tryCatch({
+          performance::r2(modelo)
+        }, error = function(e) {
+          warning(paste("Error computing R2 for", var, modelo_name))
+          return(c(NA, NA))
+        })
+        
+        resultados_r2[[paste(var, ref, modelo_name, sep = "_")]] <- data.frame(
+          Variable = var,
+          Referencia = ref,
+          Modelo = modelo_name,
+          R2_Marginal = r2_values[1],
+          R2_Condicional = r2_values[2]
+        )
+      }
+    }
+  }
+}
+
+# Combine R2 results
+r2_df <- do.call(rbind, resultados_r2) %>%
+  distinct(Variable, Modelo, .keep_all = TRUE) %>%
+  filter(!(Variable %in% c("ID", "Time"))) %>%
+  mutate(meses = meses[1])
+
+rownames(r2_df) <- NULL
+
+# Export R2 results
+write.csv(r2_df, file=paste(name.file,"_bondad_ajuste_Modelo_global.csv", sep=""))
+
+# RESIDUAL DIAGNOSTICS AND QQ-PLOTS
+variables_numericas <- setdiff(variables_numericas, c("ID", "Time"))
+
+pdf(file = paste(name.file,"panel_residuos_modelos_globales.pdf", sep=""), width = 14, height = 14)
+
+par(mfrow = c(6, 6), mar = c(3, 3, 2, 1))
+
+for (var in variables_numericas) {
+  
+  if (is.numeric(datos[[var]])) {
+    
+    for (ref in referencias) {
+      datos$Class_Progression <- relevel(datos$Class_Progression, ref = ref)
+      
+      modelos <- list(
+        Adj1 = as.formula(paste(var, form_mod_adj1)),
+        Adj2 = as.formula(paste(var, form_mod_adj2)),
+        Simple = as.formula(paste(var, form_mod_simple))
+      )
+      
+      for (modelo_name in names(modelos)) {
+        formula <- modelos[[modelo_name]]
+        
+        modelo <- tryCatch({
+          lmer(formula, data = datos, na.action = na.exclude)
+        }, error = function(e) {
+          warning(paste("Error fitting model for diagnostic plots:", var, ref, modelo_name))
+          return(NULL)
+        })
+        
+        # Generate residual and Q-Q plots
+        if (!is.null(modelo)) {
+          plot(resid(modelo), main = paste(modelo_name, var, "-", ref, "- Residuals"))
+          qqnorm(resid(modelo), main = paste(modelo_name, var, "-", ref, "- Q-Q"))
+          qqline(resid(modelo))
+        }
+      }
+    }
+    
+  } else {
+    warning(paste("Variable", var, "is not numeric."))
+  }
+}
+
+par(mfrow = c(1, 1))
+dev.off()
