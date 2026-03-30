@@ -1,0 +1,201 @@
+# ==========================================
+# Figure 1C - FINAL NETWORK (publication-ready)
+# ==========================================
+
+library(dplyr)
+library(stringr)
+library(igraph)
+library(ggraph)
+library(tidygraph)
+
+# ----------------
+# 1. Read input data
+# ----------------
+df <- read.delim("For_1C.txt",
+                 header = TRUE,
+                 sep = "\t")
+
+# ----------------
+# 2. Clean variables and define association sign
+# ----------------
+df <- df %>%
+  mutate(
+    # Clean variable names (remove extra spaces)
+    Bio = str_trim(as.character(Biochemistry.variable)),
+    Anthro = str_trim(as.character(Anthropometric.variable)),
+    
+    # Convert estimate to numeric
+    estimate = as.numeric(Estimate),
+    
+    # Biological class (domain)
+    class = as.character(Class),
+    
+    # Define association direction
+    sign = ifelse(estimate > 0,  "negative","positive"),
+    
+    # IMPORTANT: enforce factor order to control linetype mapping
+    sign = factor(sign, levels = c("negative","positive"))
+  )
+
+# ----------------
+# 3. Define high-contrast color palette for biochemical variables
+# ----------------
+palette_contrast <- c(
+  "#1B1F3B","#E63946","#2A9D8F","#F4A261","#6A4C93",
+  "#264653","#E76F51","#8AB17D","#B56576","#577590",
+  "#F94144","#43AA8B","#F3722C","#277DA1","#9D4EDD"
+)
+
+# Assign one unique color per biochemical variable
+bio_vars <- unique(df$Bio)
+palette_use <- rep(palette_contrast, length.out = length(bio_vars))
+bio_colors <- setNames(palette_use, bio_vars)
+
+# ----------------
+# 4. Build edge table
+# Each row represents one connection
+# ----------------
+edges <- df %>%
+  mutate(edge_color = bio_colors[Bio]) %>%
+  select(from = Anthro,
+         to = Bio,
+         edge_color,
+         sign)
+
+# ----------------
+# 5. Build node table
+# ----------------
+nodes <- data.frame(
+  name = unique(c(edges$from, edges$to))
+)
+
+nodes <- nodes %>%
+  mutate(
+    # Node type (central vs peripheral)
+    type = ifelse(name %in% df$Anthro, "Anthropometric", "Biochemical"),
+    
+    # Fill color based on biological class
+    fill_class = case_when(
+      name %in% df$Bio ~ df$class[match(name, df$Bio)],
+      TRUE ~ "Anthropometric"
+    ),
+    
+    # Border color: unique for biochemical variables
+    border_color = case_when(
+      name %in% bio_vars ~ bio_colors[name],
+      TRUE ~ "#2C7FB8"  # fixed color for anthropometric nodes
+    )
+  )
+
+# ----------------
+# 6. Create graph object
+# ----------------
+graph <- graph_from_data_frame(edges, vertices = nodes, directed = FALSE)
+graph_tbl <- as_tbl_graph(graph)
+
+# ----------------
+# 7. Compute node degree (number of connections)
+# Used to scale node size (highlight hubs)
+# ----------------
+graph_tbl <- graph_tbl %>%
+  activate(nodes) %>%
+  mutate(degree = centrality_degree())
+
+# ----------------
+# 8. Create radial layout
+# Anthropometric nodes = inner circle
+# Biochemical nodes = outer circle
+# ----------------
+nodes_df <- graph_tbl %>% activate(nodes) %>% as.data.frame()
+
+anthro_nodes <- nodes_df %>% filter(type == "Anthropometric")
+bio_nodes <- nodes_df %>% filter(type == "Biochemical")
+
+# Inner circle (anthropometric variables)
+nA <- nrow(anthro_nodes)
+angleA <- seq(0, 2*pi, length.out = nA + 1)[-1]
+
+anthro_nodes$x <- 0.4 * cos(angleA)
+anthro_nodes$y <- 0.4 * sin(angleA)
+
+# Outer circle (biochemical variables)
+nB <- nrow(bio_nodes)
+angleB <- seq(0, 2*pi, length.out = nB + 1)[-1]
+
+bio_nodes$x <- 1.2 * cos(angleB)
+bio_nodes$y <- 1.2 * sin(angleB)
+
+# Combine layout
+layout_df <- bind_rows(anthro_nodes, bio_nodes)
+
+# Merge layout coordinates into graph
+graph_tbl <- graph_tbl %>%
+  activate(nodes) %>%
+  left_join(layout_df %>% select(name, x, y), by = "name") %>%
+  as_tbl_graph()
+
+# ----------------
+# 9. Plot network
+# ----------------
+p_net <- ggraph(graph_tbl, layout = "manual", x = x, y = y) +
+  
+  # Edges:
+  # - color = biochemical node identity
+  # - linetype = association direction
+  geom_edge_arc(aes(color = I(edge_color),
+                    linetype = sign),
+                width = 1,
+                alpha = 0.95) +
+  
+  # Nodes:
+  # - fill = biological domain
+  # - border = unique biochemical color
+  # - size = connectivity (degree)
+  geom_node_point(aes(fill = fill_class,
+                      color = I(border_color),
+                      size = degree),
+                  shape = 21,
+                  stroke = 2) +
+  
+  # Labels
+  geom_node_text(aes(label = name),
+                 repel = TRUE,
+                 size = 3.8,
+                 max.overlaps = 100) +
+  
+  # Linetype legend (association sign)
+  scale_linetype_manual(
+    values = c(
+      "positive" =  "dashed" ,
+      "negative" = "solid"
+    ),
+    name = "Association"
+  ) +
+  
+  # Node size scaling
+  scale_size(range = c(4, 11)) +
+  
+  # Fill colors (biological domains)
+  scale_fill_manual(
+    values = c(
+      "Anthropometric" = "#3182BD",
+      "Glucose metabolism" = "#E6550D",
+      "Fatty acid metabolism" = "#31A354",
+      "Liver function" = "#756BB1",
+      "Kidney function" = "#636363",
+      "Cardiovascular" = "#E377C2"
+    )
+  ) +
+  
+  # Clean theme
+  theme_void()
+
+# ----------------
+# 10. Display plot
+# ----------------
+print(p_net)
+
+# ----------------
+# 11. Save figure
+# ----------------
+ggsave("p_net.pdf", p_net, width = 13, height = 8)
