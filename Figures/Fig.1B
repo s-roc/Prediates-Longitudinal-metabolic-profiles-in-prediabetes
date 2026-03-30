@@ -1,0 +1,142 @@
+# ==========================================
+# Figure 1B - Boxplots with IQR outlier removal
+# ==========================================
+
+# ----------------
+# 0. Libraries
+# ----------------
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+# ----------------
+# 1. Read table
+# ----------------
+df <- read.delim("Progression_Datos_Work_12meses_Ingles.txt",
+                 header = TRUE,
+                 sep = "\t",
+                 stringsAsFactors = FALSE,
+                 check.names = FALSE)
+
+# ----------------
+# 2. Select variables
+# ----------------
+plot_data <- df %>%
+  select(Time, APO_B, ALT, GGT, AU, MA) %>%
+  mutate(Time = as.numeric(Time))
+
+# ----------------
+# 3. Long format
+# ----------------
+plot_long <- plot_data %>%
+  pivot_longer(
+    cols = c(APO_B, ALT, GGT, AU, MA),
+    names_to = "Variable",
+    values_to = "Value"
+  ) %>%
+  mutate(
+    Variable = recode(
+      Variable,
+      "APO_B" = "ApoB",
+      "ALT"   = "ALT",
+      "GGT"   = "GGT",
+      "AU"    = "Uric acid",
+      "MA"    = "Microalbumin"
+    ),
+    Time = factor(Time, levels = c(0, 3, 6, 9, 12))
+  ) %>%
+  filter(!is.na(Value))
+
+# ----------------
+# 4. Remove outliers (IQR per variable)
+# ----------------
+plot_long_no_outliers <- plot_long %>%
+  group_by(Variable) %>%
+  mutate(
+    Q1 = quantile(Value, 0.25, na.rm = TRUE),
+    Q3 = quantile(Value, 0.75, na.rm = TRUE),
+    IQR_val = Q3 - Q1,
+    lower = Q1 - 1.5 * IQR_val,
+    upper = Q3 + 1.5 * IQR_val
+  ) %>%
+  filter(Value >= lower & Value <= upper) %>%
+  ungroup() %>%
+  select(-Q1, -Q3, -IQR_val, -lower, -upper)
+
+# ----------------
+# 5. Calculate means (after filtering)
+# ----------------
+summary_means <- plot_long_no_outliers %>%
+  group_by(Variable, Time) %>%
+  summarise(
+    Mean = mean(Value, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# ----------------
+# 6. Plot
+# ----------------
+p1b <- ggplot(plot_long_no_outliers, aes(x = Time, y = Value)) +
+  
+  # Boxplot
+  geom_boxplot(
+    width = 0.45,
+    outlier.shape = NA,
+    fill = "grey95",
+    color = "grey60",
+    linewidth = 0.5
+  ) +
+  
+  # Individual points
+  geom_jitter(
+    width = 0.10,
+    alpha = 0.30,
+    size = 2,
+    color = "#2C7FB8"
+  ) +
+  
+  # Mean line
+  geom_line(
+    data = summary_means,
+    aes(x = Time, y = Mean, group = 1),
+    color = "#1F77B4",
+    linewidth = 1
+  ) +
+  
+  # Mean points
+  geom_point(
+    data = summary_means,
+    aes(x = Time, y = Mean),
+    color = "#FF7F0E",
+    size = 3
+  ) +
+  
+  # Facets
+  facet_wrap(~ Variable, scales = "free_y", ncol = 3) +
+  
+  # Labels
+  labs(
+    x = "Months of follow-up",
+    y = NULL
+  ) +
+  
+  # Theme
+  theme_bw(base_size = 14) +
+  theme(
+    strip.background = element_rect(fill = "white", color = "black"),
+    strip.text = element_text(size = 14),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor = element_blank(),
+    axis.text = element_text(color = "black"),
+    axis.title.x = element_text(size = 14)
+  )
+
+# ----------------
+# 7. Print
+# ----------------
+print(p1b)
+
+# ----------------
+# 8. Save
+# ----------------
+ggsave("Figure_1B_boxplots_filtered.pdf", p1b, width = 13, height = 8)
