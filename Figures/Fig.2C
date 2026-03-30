@@ -1,0 +1,155 @@
+# ==========================================
+# Figure 2C - Longitudinal trajectories plot
+# ==========================================
+
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+
+# ----------------------------
+# 1. Load dataset
+# ----------------------------
+df <- read.delim(
+  "Progression_Datos_Work_12meses_Ingles.txt",
+  header = TRUE,
+  sep = "\t",
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+)
+
+# ----------------------------
+# 2. Define variables of interest
+# ----------------------------
+vars_interest <- c("ICA", "CR_urine", "ALT")
+
+# ----------------------------
+# 3. Reshape data to long format
+# ----------------------------
+df_long <- df %>%
+  pivot_longer(
+    cols = all_of(vars_interest),
+    names_to = "Variable",
+    values_to = "Value"
+  )
+
+# ----------------------------
+# 4. Remove extreme values (1st–99th percentile)
+# ----------------------------
+df_long <- df_long %>%
+  group_by(Variable) %>%
+  mutate(
+    lower = quantile(Value, 0.01, na.rm = TRUE),
+    upper = quantile(Value, 0.99, na.rm = TRUE)
+  ) %>%
+  ungroup() %>%
+  filter(!is.na(Value)) %>%
+  filter(Value >= lower & Value <= upper)
+
+# ----------------------------
+# 5. Data formatting
+# ----------------------------
+df_long <- df_long %>%
+  mutate(
+    Class_Progression = factor(
+      Class_Progression,
+      levels = c("Regression", "Maintained", "Progression")
+    ),
+    Variable = factor(
+      Variable,
+      levels = c("ICA", "CR_urine", "ALT")
+    ),
+    ID = as.factor(ID),
+    Time = as.numeric(Time)
+  )
+
+# ----------------------------
+# 6. Define color palette
+# ----------------------------
+colors_dark <- c(
+  "Regression" = "#4B5039",
+  "Maintained" = "#A06B27",
+  "Progression" = "#511936"
+)
+
+# ----------------------------
+# 7. Subsample individual trajectories for visualization clarity
+# ----------------------------
+set.seed(123)
+
+df_spaghetti <- df_long %>%
+  group_by(Class_Progression) %>%
+  slice_sample(prop = 0.5) %>%
+  ungroup()
+
+# ----------------------------
+# 8. Generate longitudinal plot
+# ----------------------------
+p <- ggplot(df_long, aes(x = Time, y = Value)) +
+  
+  # Individual trajectories
+  geom_line(
+    data = df_spaghetti,
+    aes(group = ID, color = Class_Progression),
+    alpha = 0.10,
+    linewidth = 0.4
+  ) +
+  
+  # Mean ± standard error
+  stat_summary(
+    aes(group = Class_Progression, fill = Class_Progression),
+    fun.data = mean_se,
+    geom = "ribbon",
+    alpha = 0.18,
+    color = NA
+  ) +
+  
+  # Mean trajectory
+  stat_summary(
+    aes(group = Class_Progression, color = Class_Progression),
+    fun = mean,
+    geom = "line",
+    linewidth = 2.2
+  ) +
+  
+  # Facet by variable with independent scales
+  facet_wrap(~Variable, scales = "free_y", nrow = 1) +
+  
+  # Apply color palette
+  scale_color_manual(values = colors_dark) +
+  scale_fill_manual(values = colors_dark) +
+  
+  # Labels
+  labs(
+    title = "Longitudinal trajectories of organ-related markers",
+    x = "Time (months)",
+    y = "Value",
+    color = "Progression class",
+    fill = "Progression class"
+  ) +
+  
+  # Theme
+  theme_minimal(base_size = 14) +
+  theme(
+    panel.grid.minor = element_blank(),
+    strip.text = element_text(face = "bold", size = 13),
+    legend.position = "top",
+    axis.text = element_text(size = 11),
+    axis.title = element_text(size = 12),
+    plot.title = element_text(face = "bold", size = 16)
+  )
+
+# ----------------------------
+# 9. Display plot
+# ----------------------------
+print(p)
+
+# ----------------------------
+# 10. Export figure
+# ----------------------------
+ggsave(
+  filename = "Figure_2C_FINAL_palette.png",
+  plot = p,
+  width = 12,
+  height = 4.8,
+  dpi = 300
+)
