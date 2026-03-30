@@ -1,0 +1,200 @@
+###############################################################
+# FIGURE 1A - HEATMAP OF LONGITUDINAL LMM ESTIMATES
+# Significance based on adjusted p-values (adj1)
+###############################################################
+
+# ==============================
+# 1. Load required libraries
+# ==============================
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(forcats)
+
+
+# ==============================
+# Load data from paper
+# ==============================
+# Update path if needed
+data_lmm <- read_excel("Sup_Table2.xlsx", sheet = "LMM Time")
+
+
+# ==============================
+# 3. Rename columns
+# ==============================
+data_lmm <- data_lmm %>%
+  rename(
+    Time = `Time (months at follow-up)`,
+    Estimate = estimate,
+    p_value = p.value
+  )
+
+
+# ==============================
+# 4. Create Domain column from headers
+# ==============================
+data_lmm <- data_lmm %>%
+  mutate(
+    Domain = ifelse(is.na(Model) & is.na(Time), Variable, NA)
+  ) %>%
+  fill(Domain)
+
+
+# ==============================
+# 5. Remove non-data rows
+# ==============================
+data_lmm <- data_lmm %>%
+  filter(!is.na(Model), !is.na(Time), !is.na(Estimate))
+
+
+# ==============================
+# 6. Keep adjusted model (Adj1)
+# ==============================
+data_lmm <- data_lmm %>%
+  filter(Model == "Adj1")
+
+
+# ==============================
+# 7. Clean Time variable
+# ==============================
+data_lmm <- data_lmm %>%
+  mutate(
+    Time_num = case_when(
+      grepl("3", Time)  ~ 3,
+      grepl("6", Time)  ~ 6,
+      grepl("9", Time)  ~ 9,
+      grepl("12", Time) ~ 12,
+      TRUE ~ NA_real_
+    )
+  )
+
+data_lmm$Time <- factor(data_lmm$Time_num, levels = c(3,6,9,12))
+
+
+# ==============================
+# 8. Significance flag (for alpha)
+# ==============================
+data_lmm <- data_lmm %>%
+  mutate(signif = p_value < 0.05)
+
+
+# ==============================
+# 9. Determine first significant time
+# ==============================
+var_timing <- data_lmm %>%
+  filter(signif == TRUE) %>%
+  group_by(Domain, Variable) %>%
+  summarize(first_time = min(Time_num), .groups = "drop")
+
+var_all <- data_lmm %>%
+  distinct(Domain, Variable)
+
+var_timing <- var_all %>%
+  left_join(var_timing, by = c("Domain", "Variable")) %>%
+  mutate(first_time = ifelse(is.na(first_time), 99, first_time))
+
+
+# ==============================
+# 10. Order variables
+# ==============================
+var_timing <- var_timing %>%
+  arrange(Domain, first_time)
+
+data_lmm <- data_lmm %>%
+  left_join(var_timing, by = c("Domain", "Variable")) %>%
+  arrange(Domain, first_time)
+
+data_lmm$Variable <- factor(data_lmm$Variable, levels = unique(data_lmm$Variable))
+
+
+# ==============================
+# 11. Define Domain order
+# ==============================
+domain_order <- c(
+  "Glucose metabolism",
+  "Fatty acid metabolism",
+  "Cardiovascular",
+  "Kidney function",
+  "Liver function",
+  "Anthropometric"
+)
+
+data_lmm$Domain <- factor(data_lmm$Domain, levels = domain_order)
+
+
+# ==============================
+# 12. Scale estimates (for color)
+# ==============================
+data_lmm <- data_lmm %>%
+  group_by(Variable) %>%
+  mutate(Estimate_scaled = scale(Estimate)[,1]) %>%
+  ungroup()
+
+
+# ==============================
+# 13. Dynamic label formatting (FIX QUICKI ISSUE)
+# ==============================
+data_lmm <- data_lmm %>%
+  mutate(
+    label_est = case_when(
+      abs(Estimate) < 0.01 ~ sprintf("%.3f", Estimate),
+      abs(Estimate) < 1    ~ sprintf("%.2f", Estimate),
+      TRUE                 ~ sprintf("%.1f", Estimate)
+    )
+  )
+
+
+# ==============================
+# 14. Plot
+# ==============================
+heatmap_plot <- ggplot(data_lmm, aes(x = Time, y = Variable, fill = Estimate_scaled)) +
+  
+  geom_tile(aes(alpha = signif), color = "white") +
+  
+  geom_text(aes(label = label_est), size = 2.5) +
+  
+  scale_alpha_manual(values = c("TRUE" = 1, "FALSE" = 0.3), guide = "none") +
+  
+  scale_fill_gradient2(
+    low = "#2166AC",
+    mid = "white",
+    high = "#B2182B",
+    midpoint = 0,
+    name = "Scaled\nEstimate"
+  ) +
+  
+  facet_grid(Domain ~ ., scales = "free_y", space = "free_y") +
+  
+  labs(
+    title = "Temporal structure of metabolic adaptation",
+    subtitle = "Values represent model estimates (Adj1)",
+    x = "Time (months)",
+    y = NULL
+  ) +
+  
+  theme_minimal() +
+  theme(
+    panel.grid = element_blank(),
+    axis.text.y = element_text(size = 9),
+    strip.text.y = element_text(face = "bold")
+  )
+
+
+# ==============================
+# 15. Display
+# ==============================
+print(heatmap_plot)
+
+
+# ==============================
+# 16. Save
+# ==============================
+
+ggsave(
+  "Figure1A_heatmap_final_dynamic.png",
+  heatmap_plot,
+  width = 8,
+  height = 10,
+  dpi = 300
+)
