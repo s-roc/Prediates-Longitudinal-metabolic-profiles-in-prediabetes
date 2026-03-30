@@ -1,0 +1,137 @@
+# Load required libraries
+library(ordinal)
+library(dplyr)
+
+# Clear environment
+rm(list = ls())
+
+# Define output label
+name=c("Borrar")
+
+# Load dataset
+datos <- read.table("Progression_Data_Work_6meses_Ingles.txt", header = TRUE, 
+                    blank.lines.skip = TRUE, dec = ".", sep = "\t", 
+                    quote = "", check.names = FALSE)
+
+# Select relevant variables and remove unnecessary columns
+datos <- datos %>%
+  select(where(~ !is.numeric(.)) | any_of(c("BMI", "Age", "ID", "Time"))) %>%
+  select(-c(Name, Dummy, RNA_concentracion, SNP_rs13342692))
+
+# Convert 'Time' into an ordered factor with a defined temporal sequence
+datos$Time <- factor(datos$Time, 
+                     levels = c("0", "3", "6", "9", "12"), 
+                     ordered = TRUE)
+
+# Define specific ordering for selected categorical variables
+orden_especifico <- list(
+  Dietary_adherence = c("Optimal", "No_optimal"),
+  Quicki_class = c("Probable_insulin_resistance", "Insulin_Resistance"),
+  HOMA_IR_Class = c("Sensitive_to_the_insulin", "Insulin_Resistance", "Significant_insulin_resistance"),
+  Class_TG = c("Normal", "High"),
+  Class_CT = c("Normal", "High"),
+  Class_HDL = c("Low", "Normal", "High"),
+  Class_LDL = c("Normal", "High"),
+  Class_R_Cho = c("Normal", "High"),
+  Apo_B_Class = c("Normal", "High"),
+  Fasting_glucose_diagnosis = c("Normal", "Prediabetes", "Diabetes"),
+  GTT_2h_diagnosis = c("Normal", "Prediabetes", "Diabetes"),
+  Hemoglobin_A1C_diagnosis = c("Normal", "Prediabetes", "Diabetes"),
+  Class_Progression = c("Regression", "Maintained", "Progression"),
+  Sex = c("male", "female"),
+  Class_waist = c("Normal", "Moderate", "High"),
+  BP_Diagnosis = c("Normal", "High", "Hypertension", "Hypertension_G2"),
+  FMI_Class = c("Normal","Elevated", "High"),
+  Class_Vat_I = c("Normal", "Elevated","High"),
+  Riesgo_ICC = c("Low", "Moderate", "High"),
+  Riesgo_ICA = c("Normal", "Risk"),
+  Class_TFG_CKD_EPI= c("Normal","Lightly reduced", "Mildly reduced", "Moderately reduced"),
+  Class_ACR=c("Normal","Elevated")
+)
+
+# Identify non-numeric variables
+cols_no_numericas <- datos %>%
+  select(where(~ !is.numeric(.))) %>%
+  colnames()
+
+# Assign ordered factors based on predefined or data-driven levels
+for (col in cols_no_numericas) {
+  if (col %in% names(orden_especifico)) {
+    datos[[col]] <- factor(datos[[col]], levels = orden_especifico[[col]], ordered = TRUE)
+  } else if (!is.ordered(datos[[col]])) {
+    datos[[col]] <- factor(datos[[col]], levels = sort(unique(datos[[col]])), ordered = TRUE)
+  }
+}
+
+# Define model formulas (no stratification by progression group)
+modelos <- list(
+  mod_simple = "~ Time + (1 | ID)",
+  mod_adj1 = "~ Time + Age + Sex + (1 | ID)",
+  mod_adj2 = "~ Time + Age + Sex + BMI + (1 | ID)"
+)
+
+# Initialize results table
+tabla_resultados <- data.frame()
+
+# Fit CLMM models for each categorical variable (excluding 'Time')
+for (var in cols_no_numericas) {
+  if (var == "Time") next
+  
+  cat("Fitting models for variable:", var, "\n")
+  
+  # Subset data removing missing values for the current variable
+  datos_filtrados <- datos %>%
+    filter(!is.na(.data[[var]]))
+  
+  # Check data availability after filtering
+  if (nrow(datos_filtrados) == 0) {
+    cat("Insufficient data for variable:", var, "\n")
+    next
+  }
+  
+  # Evaluate each model specification
+  for (modelo_nombre in names(modelos)) {
+    
+    # Build model formula dynamically
+    formula_actual <- as.formula(paste(var, modelos[[modelo_nombre]], sep = " "))
+    
+    cat("Testing model with formula:", deparse(formula_actual), "\n")
+    
+    # Fit cumulative link mixed model across the entire cohort
+    modelo <- try(clmm(formula_actual, data = datos_filtrados), silent = TRUE)
+    
+    # Validate model fit
+    if (inherits(modelo, "try-error")) {
+      cat("Model failed for variable:", var, "and model:", modelo_nombre, "\n")
+      next
+    }
+    
+    # Extract model coefficients
+    coeficientes <- coef(summary(modelo))
+    
+    coef_tabla <- data.frame(
+      Variable = var,
+      Modelo = modelo_nombre,
+      Termino = rownames(coeficientes),
+      Estimate = coeficientes[, "Estimate"],
+      Std.Error = coeficientes[, "Std. Error"],
+      z.value = coeficientes[, "z value"],
+      p.value = coeficientes[, "Pr(>|z|)"]
+    )
+    
+    # Append results to consolidated table
+    tabla_resultados <- rbind(tabla_resultados, coef_tabla)
+  }
+}
+
+# Annotate time point
+tabla_resultados <- tabla_resultados %>%
+  mutate(Months = paste(name))
+
+# Export results if available
+if (nrow(tabla_resultados) > 0) {
+  write.csv(tabla_resultados, file=paste(name,"Resultados_Modelos_CLMM.csv", sep=""), row.names = FALSE)
+  cat("Results successfully exported to 'Resultados_Modelos_CLMM.csv'\n")
+} else {
+  cat("No valid results were generated for export.\n")
+}
