@@ -1,0 +1,87 @@
+# ==========================================
+# Figure 2A - Violin plot
+# ==========================================
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+# ----------------
+# 1. Load data
+# ----------------
+df <- read.delim("2a.txt", header = TRUE, sep = "\t")
+
+# ----------------
+# 2. Define ordered factor for progression groups
+# ----------------
+df <- df %>%
+  mutate(
+    Class_Progression = factor(Class_Progression,
+                               levels = c("Regression", "Maintained", "Progression"))
+  )
+
+# ----------------
+# 3. Reshape data to long format for visualization
+# ----------------
+df_long <- df %>%
+  select(Fasting_glucose, GTT_2h, Hemoglobin_A1C, Class_Progression) %>%
+  pivot_longer(
+    cols = -Class_Progression,
+    names_to = "Variable",
+    values_to = "Value"
+  ) %>%
+  mutate(
+    Variable = recode(Variable,
+                      "Fasting_glucose" = "Fasting glucose",
+                      "GTT_2h" = "OGTT 2h",
+                      "Hemoglobin_A1C" = "HbA1c")
+  )
+
+# ----------------
+# 4. Define color palette for progression groups
+# ----------------
+palette_groups <- c(
+  "Regression"  = "#2A9D8F",
+  "Maintained"  = "#E9C46A",
+  "Progression" = "#E76F51"
+)
+
+# ----------------
+# 5. Generate violin plot with embedded distribution layers
+# ----------------
+p <- ggplot(df_long, aes(x = Class_Progression, y = Value, fill = Class_Progression)) +
+  
+  # distribution shape
+  geom_violin(trim = FALSE, alpha = 0.7, color = NA) +
+  
+  # central tendency and dispersion
+  geom_boxplot(width = 0.15, outlier.shape = NA, color = "black", alpha = 0.8) +
+  
+  # individual observations
+  geom_jitter(width = 0.08, size = 1, alpha = 0.3) +
+  
+  # facet by glycemic variable with independent scaling
+  facet_wrap(~Variable, scales = "free_y", nrow = 1) +
+  
+  # apply color palette
+  scale_fill_manual(values = palette_groups) +
+  
+  # publication-style theme
+  theme_classic(base_size = 14) +
+  theme(
+    legend.position = "top",
+    legend.title = element_blank(),
+    strip.background = element_blank(),
+    strip.text = element_text(face = "bold"),
+    axis.title.x = element_blank()
+  ) +
+  
+  ylab("Value") +
+  ggtitle("Baseline glycemic profile across clinical progression groups")
+
+# ----------------
+# 6. Export figure
+# ----------------
+ggsave("Figure_2A_violin_FIXED.png", p, width = 10, height = 4, dpi = 300)
+
+p
