@@ -1,0 +1,95 @@
+library(lmerTest)
+library(lme4)
+library(dplyr)
+library(broom.mixed)
+library(performance)
+
+# Clear environment
+rm(list = ls())
+
+# Define output labels
+name.file = "Resultados_LMM_Time_12months_Weight"
+meses = "12months"
+
+# Load dataset
+datos <- read.table("Progression_Datos_Work_12meses_Ingles.txt", header = TRUE, sep = "\t", dec = ".", quote = "", check.names = FALSE)
+
+# Remove non-relevant variables
+datos <- subset(datos, select = -c(Try_HDL, Sample, Time_between_T1_and_T5_BQ, Anual_Follow_up, mtDNA_CN_Mean, CV, mtDNA_CN_SD, S_AnthropoAge, Delta_Age))
+
+# Define categorical variables and reference levels
+datos$Time <- factor(datos$Time)
+datos$Time <- relevel(datos$Time, ref = "0")
+
+datos$Adherence_0_6 <- factor(datos$Adherence_0_6)
+datos$Adherence_0_6 <- relevel(datos$Adherence_0_6, ref = "Not_Optimal")
+
+datos$Weight_change6_sig <- factor(datos$Weight_change6_sig)
+datos$Weight_change6_sig <- relevel(datos$Weight_change6_sig, ref = "Not_Significant")
+
+# Identify numeric variables for modeling
+variables_numericas <- datos %>%
+  select_if(is.numeric) %>%
+  colnames()
+
+# Initialize results container
+resultados <- list()
+
+# Define model formulas including interaction with early weight change
+form_mod_adj1 <- "~ Time * Weight_change6_sig  + Age + Sex + (1 | ID)"
+form_mod_adj2 <- "~ Time * Weight_change6_sig + Age + Sex + BMI + (1 | ID)"
+form_mod_simple <- "~ Time * Weight_change6_sig + (1 | ID)"
+
+# Fit models for each numeric variable
+for (var in variables_numericas) {
+  
+  # Define model structures
+  modelos <- list(
+    Adj1 = as.formula(paste(var, form_mod_adj1)),
+    Adj2 = as.formula(paste(var, form_mod_adj2)),
+    Simple = as.formula(paste(var, form_mod_simple))
+  )
+  
+  # Iterate over model specifications
+  for (modelo_name in names(modelos)) {
+    formula <- modelos[[modelo_name]]
+    
+    # Fit linear mixed-effects model
+    modelo <- lmer(formula, data = datos, na.action = na.exclude)
+    
+    # Assess model singularity
+    singularidad <- if (isSingular(modelo)) "Singular" else "No Singular"
+    
+    # Extract model summary
+    resumen_modelo <- tidy(modelo)
+    
+    # Compute AIC
+    aic_value <- AIC(modelo)
+    
+    # Annotate results
+    resumen_modelo$Variable <- var
+    resumen_modelo$Modelo <- modelo_name
+    resumen_modelo$AIC <- aic_value
+    resumen_modelo$Singularidad <- singularidad
+    
+    # Store results
+    resultados[[paste(var, modelo_name, sep = "_")]] <- resumen_modelo
+  }
+}
+
+# Combine all results into a single table
+tabla_resultados <- bind_rows(resultados)
+
+# Remove non-relevant columns
+tabla_resultados <- tabla_resultados %>%
+  select(-effect, -group)
+
+# Reorder columns
+tabla_resultados <- tabla_resultados %>%
+  select(Variable, Modelo, everything())
+
+# Annotate time point
+tabla_resultados <- tabla_resultados %>% mutate(Meses = meses)
+
+# Export results table
+write.csv(tabla_resultados, file = paste0(name.file, "_resultados_global.csv"), row.names = FALSE)
