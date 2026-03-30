@@ -1,0 +1,89 @@
+# Load required libraries
+library(dplyr)
+library(tidyr)
+library(broom)
+
+# Define time label
+months=c("12months")
+
+# Load dataset
+datos <- read.table("Progression_Datos_Work_12meses_Ingles.txt", 
+                    header = TRUE, blank.lines.skip = TRUE, dec = ".", 
+                    sep = "\t", quote = "", check.names = FALSE)
+
+# Remove non-relevant variables
+datos <- subset(datos, select = -c(Try_HDL, Sample, Time_between_T1_and_T5_BQ, 
+                                   Anual_Follow_up, mtDNA_CN_Mean, CV, 
+                                   mtDNA_CN_SD, S_AnthropoAge, Delta_Age))
+
+# Select numeric variables along with identifiers and grouping variables
+datos_numericos <- datos[, sapply(datos, is.numeric) | names(datos) %in% c("ID", "Class_Progression", "Time")]
+
+# Reshape data into long format for longitudinal analysis
+datos_long <- datos_numericos %>%
+  pivot_longer(cols = -c(ID, Class_Progression, Time), names_to = "Variable", values_to = "Value")
+
+# Function to compute individual slopes using linear regression
+calculate_slopes_per_patient <- function(df) {
+  df <- df %>% filter(!is.na(Value))
+  
+  if (nrow(df) < 2) {
+    return(data.frame(ID = unique(df$ID)[1], Class_Progression = unique(df$Class_Progression)[1], 
+                      Variable = unique(df$Variable)[1], Slope = NA))
+  }
+  
+  model <- lm(Value ~ Time, data = df)
+  slope <- coef(model)["Time"]
+  
+  return(data.frame(ID = unique(df$ID)[1], Class_Progression = unique(df$Class_Progression)[1], 
+                    Variable = unique(df$Variable)[1], Slope = slope))
+}
+
+# Apply slope calculation per individual and variable
+slopes_per_patient <- datos_long %>%
+  group_by(ID, Class_Progression, Variable) %>%
+  group_split() %>%
+  lapply(calculate_slopes_per_patient) %>%
+  bind_rows()
+
+# Annotate time point
+slopes_per_patient <- slopes_per_patient  %>%
+  mutate(Months = months)
+
+# Summarize slopes by clinical progression group and variable
+slopes_summary <- slopes_per_patient %>%
+  group_by(Class_Progression, Variable) %>%
+  summarise(Mean_Slope = mean(Slope, na.rm = TRUE),
+            SD_Slope = sd(Slope, na.rm = TRUE),
+            N = sum(!is.na(Slope)),
+            .groups = "drop")
+
+# Annotate time point
+slopes_summary <- slopes_summary  %>%
+  mutate(Months = months)
+
+# Export slope results
+write.csv(slopes_per_patient, file=paste(months,"Slopes_Per_Patient.csv",sep=""), row.names = FALSE)
+write.csv(slopes_summary, file=paste(months,"Slopes_Summary_By_Class.csv", sep=""), row.names = FALSE)
+
+library(reshape2)
+library(dplyr)
+library(ggpubr)
+
+# Load slope data for statistical comparison
+datos_melt <- read.csv("Summary_Slopes_Per_Patient.csv", 
+                       header = TRUE, 
+                       check.names = FALSE)
+
+# Remove missing values
+datos_melt <- datos_melt %>% filter(!is.na(Slope))
+
+# Compare slopes across progression groups
+stat=compare_means(Slope ~ Class_Progression, group.by = c("Variable","Months"),ref.group = "Maintained", 
+                   method = "wilcox.test",data = datos_melt,)
+write.csv(stat, "Comparison_Slope_Results.csv")
+
+# Compare slopes across time points
+stat2=compare_means(Slope ~ Months, group.by = c("Variable","Class_Progression"),ref.group = "6months", 
+                    method = "wilcox.test",data = datos_melt,)
+write.csv(stat2, "Comparison_Slope_TIME_Results.csv")
