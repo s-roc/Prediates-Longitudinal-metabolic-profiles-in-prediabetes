@@ -1,0 +1,221 @@
+# ==========================================
+# Sankey plot for longitudinal trajectories
+# ==========================================
+
+library(dplyr)
+library(ggplot2)
+library(ggalluvial)
+library(rlang)
+library(scales)
+library(grid)
+
+# Clear environment
+rm(list = ls())
+
+# ----------------------------
+# 1. Load dataset
+# ----------------------------
+datos <- read.table(
+  "Progression_Datos_Work_12meses_Ingles.txt",
+  header = TRUE,
+  sep = "\t",
+  check.names = FALSE,
+  stringsAsFactors = FALSE
+)
+
+# ----------------------------
+# 2. Define variables of interest
+# ----------------------------
+vars_interest <- c(
+  "Class_Apo_B",
+  "Class_TFG_CKD_EPI",
+  "BP_Diagnosis",
+  "Risk_ICC",
+  "Class_FMI"
+)
+
+# ----------------------------
+# 3. Define ordered factors for grouping variables
+# ----------------------------
+datos$Class_Progression <- factor(
+  datos$Class_Progression,
+  levels = c("Regression", "Maintained", "Progression")
+)
+
+datos$Time <- factor(
+  datos$Time,
+  levels = c(0, 3, 6, 9, 12),
+  ordered = TRUE
+)
+
+# ----------------------------
+# 4. Define visualization metadata
+# ----------------------------
+plot_info <- list(
+  "Class_Apo_B" = list(
+    levels = c("Normal", "High"),
+    colors = c("Normal" = "#99D0D3", "High" = "#CB6F18"),
+    title = "ApoB trajectories"
+  ),
+  "Class_TFG_CKD_EPI" = list(
+    levels = c("Normal", "Mildly reduced", "Lightly reduced", "Moderately reduced"),
+    colors = c(
+      "Normal" = "#99D0D3",
+      "Mildly reduced" = "#2E958C",
+      "Lightly reduced" = "#C8C3C9",
+      "Moderately reduced" = "#B47EB2"
+    ),
+    title = "eGFR trajectories"
+  ),
+  "BP_Diagnosis" = list(
+    levels = c("Normal", "High", "Hypertension", "Hypertension_G2"),
+    colors = c(
+      "Normal" = "#99D0D3",
+      "High" = "#2E958C",
+      "Hypertension" = "#C8C3C9",
+      "Hypertension_G2" = "#B47EB2"
+    ),
+    title = "Blood pressure trajectories"
+  ),
+  "Risk_ICC" = list(
+    levels = c("Low", "Moderate", "High"),
+    colors = c(
+      "Low" = "#224F75",
+      "Moderate" = "#CCC1B8",
+      "High" = "#CB6F18"
+    ),
+    title = "Waist-to-hip ratio risk trajectories"
+  ),
+  "Class_FMI" = list(
+    levels = c("Normal", "Elevated", "High"),
+    colors = c(
+      "Normal" = "#99D0D3",
+      "Elevated" = "#2E958C",
+      "High" = "#CB6F18"
+    ),
+    title = "FMI trajectories"
+  )
+)
+
+# ----------------------------
+# 5. Function to generate Sankey plots
+# ----------------------------
+plot_sankey <- function(data, var_name, var_levels, var_colors, plot_title) {
+  
+  # Prepare dataset for selected variable
+  df <- data %>%
+    select(ID, Time, Class_Progression, !!sym(var_name)) %>%
+    filter(!is.na(!!sym(var_name))) %>%
+    mutate(
+      Category = factor(!!sym(var_name), levels = var_levels, ordered = TRUE)
+    )
+  
+  # Compute normalized weights within each time and progression group
+  df <- df %>%
+    group_by(Class_Progression, Time) %>%
+    mutate(total = n()) %>%
+    ungroup() %>%
+    mutate(weight = 1 / total)
+  
+  # Compute proportions and label positions for visualization
+  df_percent <- df %>%
+    group_by(Class_Progression, Time, Category) %>%
+    summarise(prop = sum(weight), .groups = "drop") %>%
+    mutate(label = paste0(round(prop * 100, 1), "%")) %>%
+    arrange(Class_Progression, Time, desc(Category)) %>%
+    group_by(Class_Progression, Time) %>%
+    mutate(
+      y_start = cumsum(lag(prop, default = 0)),
+      y_pos = y_start + prop / 2
+    )
+  
+  # Generate Sankey plot
+  p <- ggplot(
+    df,
+    aes(
+      x = Time,
+      stratum = Category,
+      alluvium = ID,
+      y = weight,
+      fill = Category
+    )
+  ) +
+    
+    # Flow of individuals across time
+    geom_flow(
+      alpha = 0.35,
+      color = "grey80"
+    ) +
+    
+    # Category blocks at each time point
+    geom_stratum(
+      width = 0.6,
+      color = "black"
+    ) +
+    
+    # Percentage labels
+    geom_text(
+      data = df_percent,
+      aes(x = Time, y = y_pos, label = label),
+      inherit.aes = FALSE,
+      size = 5
+    ) +
+    
+    # Separate panels by clinical progression group
+    facet_wrap(~Class_Progression, ncol = 1) +
+    
+    # Y-axis as percentage
+    scale_y_continuous(
+      labels = percent_format(accuracy = 1),
+      expand = expansion(mult = c(0.02, 0.08))
+    ) +
+    
+    # Apply color mapping
+    scale_fill_manual(values = var_colors, drop = FALSE) +
+    
+    # Labels and theme
+    labs(
+      title = plot_title,
+      x = "Time (months)",
+      y = "Percentage of patients",
+      fill = NULL
+    ) +
+    
+    theme_minimal(base_size = 18) +
+    theme(
+      panel.grid = element_blank(),
+      legend.position = "bottom",
+      strip.text = element_text(size = 16, face = "bold"),
+      panel.spacing = unit(2, "lines")
+    )
+  
+  return(p)
+}
+
+# ----------------------------
+# 6. Generate plots for each variable
+# ----------------------------
+plots_list <- list()
+
+for (v in vars_interest) {
+  
+  info <- plot_info[[v]]
+  
+  p <- plot_sankey(
+    data = datos,
+    var_name = v,
+    var_levels = info$levels,
+    var_colors = info$colors,
+    plot_title = info$title
+  )
+  
+  plots_list[[v]] <- p
+  
+  ggsave(
+    filename = paste0(v, "_Sankey_VERTICAL.png"),
+    plot = p,
+    width = 6,
+    height = 14,
+    dpi = 300
+  )
+}
